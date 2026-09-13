@@ -1172,6 +1172,8 @@ region save
 
 ### Ethernet (when Ethernet support is compiled in)
 
+ThinkNode M7 repeater Ethernet time synchronization uses the same `eth.status` spelling, adds `ntp.status` and persistent `get`/`set` network settings, and does not start an Ethernet CLI listener. See [M7 Ethernet time synchronization](m7_ethernet_time_sync.md). The RAK4631 behavior below is unchanged.
+
 Ethernet support is available on RAK4631 boards with a RAK13800 (W5100S) Ethernet module. Use the `_ethernet` firmware variants (e.g. `RAK_4631_repeater_ethernet`) to enable this feature.
 
 ---

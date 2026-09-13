@@ -82,7 +82,7 @@ void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float sn
   // update neighbour info
   neighbour->id = id;
   neighbour->advert_timestamp = timestamp;
-  neighbour->heard_timestamp = getRTCClock()->getCurrentTime();
+  neighbour->heard_timestamp = localIntervalSeconds();
   neighbour->snr = (int8_t)(snr * 4);
 #endif
 }
@@ -118,7 +118,7 @@ uint8_t MyMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t* secr
 
     MESH_DEBUG_PRINTLN("Login success!");
     client->last_timestamp = sender_timestamp;
-    client->last_activity = getRTCClock()->getCurrentTime();
+    client->last_activity = localIntervalSeconds();
     client->permissions &= ~0x03;
     client->permissions |= perms;
     memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
@@ -145,7 +145,7 @@ uint8_t MyMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t* secr
 }
 
 uint8_t MyMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
-  if (anon_limiter.allow(rtc_clock.getCurrentTime())) {
+  if (anon_limiter.allow(localIntervalSeconds())) {
     // request data has: {reply-path-len}{reply-path}
     reply_path_len = *data++;
     if (!mesh::Packet::isValidPathLen(reply_path_len)) return 0;  // reject - bad encoding
@@ -163,7 +163,7 @@ uint8_t MyMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_t send
 }
 
 uint8_t MyMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
-  if (anon_limiter.allow(rtc_clock.getCurrentTime())) {
+  if (anon_limiter.allow(localIntervalSeconds())) {
     // request data has: {reply-path-len}{reply-path}
     reply_path_len = *data++;
     if (!mesh::Packet::isValidPathLen(reply_path_len)) return 0;  // reject - bad encoding
@@ -182,7 +182,7 @@ uint8_t MyMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender
 }
 
 uint8_t MyMesh::handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
-  if (anon_limiter.allow(rtc_clock.getCurrentTime())) {
+  if (anon_limiter.allow(localIntervalSeconds())) {
     // request data has: {reply-path-len}{reply-path}
     reply_path_len = *data++;
     if (!mesh::Packet::isValidPathLen(reply_path_len)) return 0;  // reject - bad encoding
@@ -352,7 +352,7 @@ int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t
 #if MAX_NEIGHBOURS
         // add next neighbour to results
         auto neighbour = sorted_neighbours[index + offset];
-        uint32_t heard_seconds_ago = getRTCClock()->getCurrentTime() - neighbour->heard_timestamp;
+        uint32_t heard_seconds_ago = localIntervalSeconds() - neighbour->heard_timestamp;
         memcpy(&results_buffer[results_offset], neighbour->id.pub_key, pubkey_prefix_length); results_offset += pubkey_prefix_length;
         memcpy(&results_buffer[results_offset], &heard_seconds_ago, 4); results_offset += 4;
         memcpy(&results_buffer[results_offset], &neighbour->snr, 1); results_offset += 1;
@@ -377,10 +377,23 @@ int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t
 }
 
 mesh::Packet *MyMesh::createSelfAdvert() {
+#ifdef M7_ETHERNET_TIME_SYNC
+  advert_clock.synced = ethernetTimeSync.isSynced();
+  if (!advert_clock.canAdvert(getRTCClock()->getCurrentTime())) return nullptr;
+#endif
   uint8_t app_data[MAX_ADVERT_DATA_SIZE];
   uint8_t app_data_len = _cli.buildAdvertData(ADV_TYPE_REPEATER, app_data);
 
-  return createAdvert(self_id, app_data, app_data_len);
+  auto packet = createAdvert(self_id, app_data, app_data_len);
+#ifdef M7_ETHERNET_TIME_SYNC
+  if (packet) {
+    uint32_t timestamp;
+    memcpy(&timestamp, packet->payload + PUB_KEY_SIZE, sizeof(timestamp));
+    if (!advert_clock.canAdvert(timestamp)) { releasePacket(packet); return nullptr; }
+    advert_clock.advertised(timestamp);
+  }
+#endif
+  return packet;
 }
 
 File MyMesh::openAppend(const char *fname) {
@@ -570,6 +583,9 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
 
 void MyMesh::onAnonDataRecv(mesh::Packet *packet, const uint8_t *secret, const mesh::Identity &sender,
                             uint8_t *data, size_t len) {
+#ifdef M7_ETHERNET_TIME_SYNC
+  if (!ethernetTimeSync.isSynced()) return; // These local responses all include our clock.
+#endif
   if (packet->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) { // received an initial request by a possible admin
                                                            // client (unknown at this stage)
     uint32_t timestamp;
@@ -678,7 +694,7 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
       if (reply_len == 0) return; // invalid command
 
       client->last_timestamp = timestamp;
-      client->last_activity = getRTCClock()->getCurrentTime();
+      client->last_activity = localIntervalSeconds();
 
       if (packet->isRouteFlood()) {
         // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the response
@@ -700,6 +716,9 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
       MESH_DEBUG_PRINTLN("onPeerDataRecv: possible replay attack detected");
     }
   } else if (type == PAYLOAD_TYPE_TXT_MSG && len > 5 && client->isAdmin()) { // a CLI command
+#ifdef M7_ETHERNET_TIME_SYNC
+    if (!ethernetTimeSync.isSynced()) return; // CLI replies contain locally generated timestamps.
+#endif
     uint32_t sender_timestamp;
     memcpy(&sender_timestamp, data, 4); // timestamp (by sender's RTC clock - which could be wrong)
     uint8_t flags = (data[4] >> 2);        // message attempt number, and other flags
@@ -709,7 +728,7 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
     } else if (sender_timestamp >= client->last_timestamp) { // prevent replay attacks
       bool is_retry = (sender_timestamp == client->last_timestamp);
       client->last_timestamp = sender_timestamp;
-      client->last_activity = getRTCClock()->getCurrentTime();
+      client->last_activity = localIntervalSeconds();
 
       // len can be > original length, but 'text' will be padded with zeroes
       data[len] = 0; // need to make a C string again, with null terminator
@@ -774,7 +793,7 @@ bool MyMesh::onPeerPathRecv(mesh::Packet *packet, int sender_idx, const uint8_t 
 
     // store a copy of path, for sendDirect()
     client->out_path_len = mesh::Packet::copyPath(client->out_path, path, path_len);
-    client->last_activity = getRTCClock()->getCurrentTime();
+    client->last_activity = localIntervalSeconds();
   } else {
     MESH_DEBUG_PRINTLN("onPeerPathRecv: invalid peer idx: %d", i);
   }
@@ -789,7 +808,7 @@ bool MyMesh::onPeerPathRecv(mesh::Packet *packet, int sender_idx, const uint8_t 
 void MyMesh::onControlDataRecv(mesh::Packet* packet) {
   uint8_t type = packet->payload[0] & 0xF0;    // just test upper 4 bits
   if (type == CTL_TYPE_NODE_DISCOVER_REQ && packet->payload_len >= 6
-      && !_prefs.disable_fwd && discover_limiter.allow(rtc_clock.getCurrentTime())
+      && !_prefs.disable_fwd && discover_limiter.allow(localIntervalSeconds())
   ) {
     int i = 1;
     uint8_t  filter = packet->payload[i++];
@@ -1118,7 +1137,7 @@ void MyMesh::formatNeighborsReply(char *reply) {
     mesh::Utils::toHex(hex, neighbour->id.pub_key, 4);
 
     // add next neighbour
-    uint32_t secs_ago = getRTCClock()->getCurrentTime() - neighbour->heard_timestamp;
+    uint32_t secs_ago = localIntervalSeconds() - neighbour->heard_timestamp;
     sprintf(dp, "%s:%d:%d", hex, secs_ago, neighbour->snr);
     while (*dp)
       dp++; // find end of string
@@ -1194,6 +1213,20 @@ void MyMesh::clearStats() {
 }
 
 void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
+#ifdef M7_ETHERNET_TIME_SYNC
+  if (!region_load_active) {
+    if (ethernetTimeSync.handleCommand(command, reply, 160)) return;
+    if ((!strcmp(command, "clock") || !strncmp(command, "clock ", 6)) && !ethernetTimeSync.isSynced()) {
+      strcpy(reply, "Clock unsynchronized; waiting for SNTP");
+      return;
+    }
+    if (!strncmp(command, "advert", 6) &&
+        (!ethernetTimeSync.isSynced() || !advert_clock.canAdvert(getRTCClock()->getCurrentTime()))) {
+      strcpy(reply, "ERR: advert suppressed; waiting for synchronized time to advance");
+      return;
+    }
+  }
+#endif
   if (region_load_active) {
     if (StrHelper::isBlank(command)) {  // empty/blank line, signal to terminate 'load' operation
       region_map = temp_map;  // copy over the temp instance as new current map
@@ -1285,6 +1318,22 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
 }
 
 void MyMesh::loop() {
+#ifdef M7_ETHERNET_TIME_SYNC
+  ethernetTimeSync.loop();
+  uint32_t sequence = ethernetTimeSync.syncSequence();
+  if (sequence != time_sync_sequence && ethernetTimeSync.isSynced()) {
+    bool first = time_sync_sequence == 0;
+    time_sync_sequence = sequence;
+    advert_clock.synced = true;
+    if (first) {
+#if ENABLE_ADVERT_ON_BOOT == 1
+      sendSelfAdvertisement(0, false);
+#endif
+      updateAdvertTimer();
+      updateFloodAdvertTimer();
+    }
+  }
+#endif
 #ifdef WITH_BRIDGE
   bridge.loop();
 #endif
@@ -1331,6 +1380,9 @@ void MyMesh::loop() {
 
 // To check if there is pending work
 bool MyMesh::hasPendingWork() const {
+#ifdef M7_ETHERNET_TIME_SYNC
+  return true; // Keep relaying and Ethernet alive while awaiting/retrying SNTP.
+#endif
 #if defined(WITH_BRIDGE)
   if (bridge.isRunning()) return true;  // bridge needs WiFi radio, can't sleep
 #endif

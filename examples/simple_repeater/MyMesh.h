@@ -36,6 +36,9 @@
 #include <helpers/RegionMap.h>
 #include <helpers/RoutingPolicy.h>
 #include "RateLimiter.h"
+#ifdef M7_ETHERNET_TIME_SYNC
+#include <helpers/ethernet/ch390/EthernetTimeSync.h>
+#endif
 
 #ifdef WITH_BRIDGE
 extern AbstractBridge* bridge;
@@ -88,6 +91,17 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint64_t uptime_millis;
   unsigned long next_local_advert, next_flood_advert;
   bool _logging;
+#ifdef M7_ETHERNET_TIME_SYNC
+  TimeSyncPolicy advert_clock;
+  uint32_t time_sync_sequence = 0;
+#endif
+  uint32_t localIntervalSeconds() {
+#ifdef M7_ETHERNET_TIME_SYNC
+    return uint32_t(uptime_millis / 1000) + 1;
+#else
+    return getRTCClock()->getCurrentTime();
+#endif
+  }
   NodePrefs _prefs;
   ClientACL  acl;
   CommonCLI _cli;

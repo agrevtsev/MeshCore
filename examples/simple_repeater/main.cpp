@@ -105,6 +105,10 @@ void setup() {
   sensors.begin();
 
   the_mesh.begin(fs);
+#ifdef M7_ETHERNET_TIME_SYNC
+  board.setInhibitSleep(true);
+  ethernetTimeSync.begin(*fs);
+#endif
 
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
@@ -115,7 +119,7 @@ void setup() {
 #endif
 
   // send out initial zero hop Advertisement to the mesh
-#if ENABLE_ADVERT_ON_BOOT == 1
+#if ENABLE_ADVERT_ON_BOOT == 1 && !defined(M7_ETHERNET_TIME_SYNC)
   the_mesh.sendSelfAdvertisement(16000, false);
 #endif
 

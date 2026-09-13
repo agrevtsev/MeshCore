@@ -1,4 +1,5 @@
 #include "CH390EthernetInterface.h"
+#include "CH390Network.h"
 
 void onWiFiEvent(WiFiEvent_t event) {
   switch(event){
@@ -30,13 +31,7 @@ bool CH390EthernetInterface::begin() {
   WiFi.onEvent(onWiFiEvent);
 
   // Init CH390
-  ch390_config_t config = CH390_DEFAULT_CONFIG();
-  config.spi_miso_gpio = ETH_MISO_PIN;
-  config.spi_mosi_gpio = ETH_MOSI_PIN;
-  config.spi_sck_gpio = ETH_SCLK_PIN;
-  config.spi_cs_gpio = ETH_CS_PIN;
-  config.int_gpio = ETH_INT_PIN;
-  if (!CH390.begin(config)) {
+  if (!beginCH390Network()) {
     ETHERNET_DEBUG_PRINTLN("Failed to initialize CH390 hardware.");
     return false;
   }
@@ -46,7 +41,11 @@ bool CH390EthernetInterface::begin() {
     IPAddress ip(ETHERNET_STATIC_IP);
     IPAddress gw(ETHERNET_STATIC_GATEWAY);
     IPAddress sn(ETHERNET_STATIC_SUBNET);
-    CH390.config(ip, gw, sn);
+    #ifdef ETHERNET_STATIC_DNS
+      CH390.config(ip, gw, sn, IPAddress(ETHERNET_STATIC_DNS));
+    #else
+      CH390.config(ip, gw, sn);
+    #endif
   #endif
 
   // Start Server

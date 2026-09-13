@@ -32,7 +32,7 @@ Use the existing `ConfigSerializer` and filesystem persistence pattern for a sep
 
 ### Source selection
 
-An explicit IPv4 address or DNS hostname is exclusive: disable DHCP NTP acceptance and never switch to public or DHCP servers on failure. `0.0.0.0` enables automatic selection. In automatic DHCP mode, enable option 42 before starting DHCP, preserve acquired addresses, and try them first. If absent, use public hostname fallback immediately after address acquisition; if supplied but unreachable, advance after a bounded 30-second source-attempt window. In static mode, automatic selection uses public fallback directly. Use `pool.ntp.org` and `time.nist.gov` as initial fallback candidates, subject to validation of service-use suitability before distribution.
+An explicit IPv4 address or DNS hostname is exclusive: disable DHCP NTP acceptance and never switch to public or DHCP servers on failure. `0.0.0.0` enables automatic selection. In automatic DHCP mode, enable option 42 before starting DHCP, preserve acquired addresses, and try them first. If absent, use public hostname fallback immediately after address acquisition; if supplied but unreachable, advance after a bounded 30-second source-attempt window. In static mode, automatic selection uses public fallback directly. Use `time.cloudflare.com` and `time.nist.gov` as public fallback candidates. Cloudflare documents its public NTP endpoint at https://developers.cloudflare.com/time-services/ntp/usage/. Avoid embedding the generic NTP Pool hostname in distributed firmware: the pool asks vendors to obtain a vendor zone (https://www.ntppool.org/en/vendors.html).
 
 Retry failed selection cycles with backoff from 30 seconds to a 15-minute cap; do not busy-loop or retry every mesh iteration. Link recovery and changed DHCP server information trigger a new selection cycle, respecting the exclusive override. Maintain automatic source preference on subsequent cycles. Re-synchronize approximately hourly after success. Implement timers using monotonic uptime. Exact lwIP server-slot replacement and lease-renewal interaction must be verified against the pinned implementation; do not assume the example alone supplies failover policy.
 
@@ -66,3 +66,13 @@ Enable the feature for the M7 repeater build only and preserve unrelated builds.
 ## Open Questions
 
 No user requirement blocks proposal completion. Implementation must verify CH390 option 42 handling, server-slot behavior during renewal, and the existing test harness best suited to clock corrections. These are validation tasks, not reasons to assume a framework rebuild is necessary.
+
+## Implementation evidence
+
+The resolved framework package is `3.20017.241212+sha.dcc1105b`. Its M7 qio_opi sdkconfig enables DHCP NTP and three SNTP server slots. The compiled lwIP archive exports `dhcp_set_ntp_servers` and a weak `sntp_sync_time`. Use an M7-only linker wrapper for DHCP's NTP notification to retain the current lease's addresses independently of active SNTP slots (including same-IP renewals). Keep selection and all raw lwIP SNTP operations on the TCP/IP thread. A weak SNTP time-application override validates time before changing the system clock; main-loop notifications handle mesh bookkeeping. This avoids modifying/rebuilding the bundled framework.
+
+The pinned CH390 `linkUp()` actually tests for an address; use Ethernet connect/disconnect events instead. Driver startup runs in a background task because hardware initialization may wait. Existing peer CLI replies also carry local time; suppress these before first sync in addition to anonymous replies. Existing native GoogleTest/ConfigSerializer mocks support pure configuration and policy tests.
+
+Settings persistence uses temporary and backup records because SPIFFS rename does not replace an existing destination. Read back the temporary record before moving the current record; recover the backup if boot finds an interrupted commit. Native tests cover repeated saves and failed writes/renames.
+
+The pinned CH390 header also incorrectly overlays native Ethernet event enum names with fallback macros (CONNECTED=1 instead of 2, DISCONNECTED=2 instead of 3, STOP=3 instead of 1). The time service registers directly for ESP-IDF ETH_EVENT/IP_EVENT notifications and undefines those macros in its own translation unit, preserving the native enum values without changing the dependency or companion behavior.
